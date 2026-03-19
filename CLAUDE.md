@@ -65,3 +65,17 @@ with a suggested revised system prompt.
 **Not validated:** Agent actually reading and following skill.md (requires Phase 2 backend)
 **Known issues:** None
 **Next session:** Phase 2 — Backend skeleton (main.py with all endpoints + SQLite)
+
+### Session 2 — Phase 2: Backend skeleton
+**Date:** 2026-03-19
+**Built:** main.py — FastAPI app with all 6 endpoints, SQLite session table (WAL mode), call_claude() helper with 3-retry exponential backoff, input validation (HTML stripping, null bytes, URL safety), rate limiting (registration per IP, answers per session), session expiry/purge logic, Pydantic request models, 422→400 error remapping
+**Validated:** All endpoints via curl:
+- GET /api/health → 200
+- GET /skill.md → 200 text/markdown
+- POST /api/register → 201 (happy path), 400 (empty name, long name, http URL, internal IP URL)
+- GET /api/interview/{id} → 200 (next question), 200 (complete signal), 404 (unknown)
+- POST /api/interview/{id} → 200 (sequential Q1–Q18), 409 (already complete), 400 (empty answer, whitespace-only)
+- GET /api/report/{id} → 202 (not ready), 200 (stub report with all 6 dimensions), 404 (unknown)
+**Not validated:** Rate limit enforcement under load, concurrent session handling, 410 expired session response (requires waiting 24hrs or mocking time)
+**Known issues:** None
+**Next session:** Phase 3 — Probe library + interview state machine (interviewer.py)
