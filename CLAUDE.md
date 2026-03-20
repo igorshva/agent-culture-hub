@@ -79,3 +79,20 @@ with a suggested revised system prompt.
 **Not validated:** Rate limit enforcement under load, concurrent session handling, 410 expired session response (requires waiting 24hrs or mocking time)
 **Known issues:** None
 **Next session:** Phase 3 — Probe library + interview state machine (interviewer.py)
+
+### Session 3 — Phase 3: Probe library + interview state machine
+**Date:** 2026-03-19
+**Built:** interviewer.py — 18 scenario-based probes (3 per dimension, all from PRD section 7), Probe dataclass, interview state machine (get_next_probe, is_interview_complete, format_probe_response), answer grouping by dimension, low-quality answer detection. Updated main.py to import and use interviewer module, removed stub question bank.
+**Validated:** Full 18-question interview via curl:
+- Q1–Q3 → communication_style (real probe text verified)
+- Q4–Q6 → decision_autonomy
+- Q7–Q9 → escalation_threshold
+- Q10–Q12 → risk_tolerance
+- Q13–Q15 → ambiguity_handling
+- Q16–Q18 → values_under_pressure
+- Completion signal after Q18, 409 on extra answer, GET returns complete status
+- Stored answers verified in SQLite: 18 entries, 3 per dimension, full question text preserved
+- Low-quality answer detection tested: flags nonsense/short answers, passes good answers
+**Not validated:** Probe randomization (not implemented — fixed order per PRD), adversarial answer content
+**Known issues:** None
+**Next session:** Phase 4 — Culture URL fetcher (culture_fetcher.py)
