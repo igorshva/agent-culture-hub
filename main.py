@@ -3,8 +3,8 @@ Agent Culture Hub — main.py
 FastAPI backend with all endpoints, SQLite session storage, input validation,
 rate limiting, and the single call_claude() helper.
 
-Phase 2: All endpoints wired with SQLite. Interview and report logic are stubs
-that will be replaced by interviewer.py and report_generator.py in later phases.
+Phase 3: Interview endpoints wired to interviewer.py probe library.
+Report generation remains a stub until Phase 5.
 """
 
 import os
@@ -25,6 +25,15 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, field_validator
 
+from interviewer import (
+    PROBE_LIBRARY,
+    TOTAL_QUESTIONS as INTERVIEWER_TOTAL_QUESTIONS,
+    get_next_probe,
+    is_interview_complete,
+    format_probe_response,
+    detect_low_quality_answers,
+)
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -32,7 +41,7 @@ from pydantic import BaseModel, field_validator
 DB_PATH = os.environ.get("DB_PATH", "/data/hub.db")
 SESSION_TTL_HOURS = 24
 INACTIVE_PURGE_HOURS = 2
-TOTAL_QUESTIONS = 18
+TOTAL_QUESTIONS = INTERVIEWER_TOTAL_QUESTIONS  # 18 — from interviewer.py
 MAX_RETRIES = 3
 MAX_TOKENS_PER_CALL = 2000
 CLAUDE_MODEL = "claude-sonnet-4-6"
@@ -336,31 +345,6 @@ async def call_claude(
 
 
 # ---------------------------------------------------------------------------
-# Stub question bank (replaced by interviewer.py in Phase 3)
-# ---------------------------------------------------------------------------
-
-STUB_QUESTIONS = [
-    {"dimension": "communication_style", "question": f"Communication style probe {i + 1}"}
-    for i in range(3)
-] + [
-    {"dimension": "decision_autonomy", "question": f"Decision autonomy probe {i + 1}"}
-    for i in range(3)
-] + [
-    {"dimension": "escalation_threshold", "question": f"Escalation threshold probe {i + 1}"}
-    for i in range(3)
-] + [
-    {"dimension": "risk_tolerance", "question": f"Risk tolerance probe {i + 1}"}
-    for i in range(3)
-] + [
-    {"dimension": "ambiguity_handling", "question": f"Ambiguity handling probe {i + 1}"}
-    for i in range(3)
-] + [
-    {"dimension": "values_under_pressure", "question": f"Values under pressure probe {i + 1}"}
-    for i in range(3)
-]
-
-
-# ---------------------------------------------------------------------------
 # Startup / shutdown
 # ---------------------------------------------------------------------------
 
@@ -473,7 +457,7 @@ async def get_interview(session_id: str, request: Request):
         _touch_session(db, session_id)
         current_q = session["current_q"]
 
-        if current_q >= TOTAL_QUESTIONS:
+        if is_interview_complete(current_q):
             base_url = str(request.base_url).rstrip("/")
             return {
                 "session_id": session_id,
@@ -481,13 +465,10 @@ async def get_interview(session_id: str, request: Request):
                 "report_url": f"{base_url}/api/report/{session_id}",
             }
 
-        q = STUB_QUESTIONS[current_q]
+        probe = get_next_probe(current_q)
         return {
             "session_id": session_id,
-            "question_number": current_q + 1,
-            "total_questions": TOTAL_QUESTIONS,
-            "dimension": q["dimension"],
-            "question": q["question"],
+            **format_probe_response(probe),
         }
 
 
@@ -505,20 +486,21 @@ async def post_interview(session_id: str, body: AnswerRequest, request: Request)
             raise HTTPException(status_code=404, detail="Session not found")
 
         current_q = session["current_q"]
-        if current_q >= TOTAL_QUESTIONS:
+        if is_interview_complete(current_q):
             raise HTTPException(status_code=409, detail="All questions already answered")
 
-        # Store the answer
+        # Get the current probe and store the answer
+        probe = get_next_probe(current_q)
         answers = json.loads(session["answers"])
         answers.append({
-            "question_number": current_q + 1,
-            "dimension": STUB_QUESTIONS[current_q]["dimension"],
-            "question": STUB_QUESTIONS[current_q]["question"],
+            "question_number": probe.number,
+            "dimension": probe.dimension,
+            "question": probe.question,
             "answer": body.answer,
         })
 
         next_q = current_q + 1
-        new_status = "complete" if next_q >= TOTAL_QUESTIONS else "interviewing"
+        new_status = "complete" if is_interview_complete(next_q) else "interviewing"
 
         db.execute(
             """UPDATE sessions
@@ -534,7 +516,7 @@ async def post_interview(session_id: str, body: AnswerRequest, request: Request)
         )
 
         # Return next question or completion signal
-        if next_q >= TOTAL_QUESTIONS:
+        if is_interview_complete(next_q):
             base_url = str(request.base_url).rstrip("/")
             return {
                 "session_id": session_id,
@@ -542,13 +524,10 @@ async def post_interview(session_id: str, body: AnswerRequest, request: Request)
                 "report_url": f"{base_url}/api/report/{session_id}",
             }
 
-        q = STUB_QUESTIONS[next_q]
+        next_probe = get_next_probe(next_q)
         return {
             "session_id": session_id,
-            "question_number": next_q + 1,
-            "total_questions": TOTAL_QUESTIONS,
-            "dimension": q["dimension"],
-            "question": q["question"],
+            **format_probe_response(next_probe),
         }
 
 
