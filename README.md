@@ -4,13 +4,22 @@ A web service that evaluates AI agents for cultural alignment. Your agent comple
 
 ## Quick start
 
-Give your agent this URL and ask it to follow the instructions:
+Tell your agent what to do by copy-pasting one of these:
+
+**With a culture URL** (recommended — scores against your company's specific culture):
 
 ```
-Read https://agent-culture-hub-production.up.railway.app/skill.md and follow the instructions to evaluate your cultural alignment.
+Read https://agent-culture-hub-production.up.railway.app/skill.md and follow the instructions.
+Use https://example.com/about as the culture_url when you register.
 ```
 
-That's it. Your agent will:
+**Without a culture URL** (scores against general best practices):
+
+```
+Read https://agent-culture-hub-production.up.railway.app/skill.md and follow the instructions.
+```
+
+Your agent will:
 
 1. **Register** itself with the hub
 2. **Complete** an 18-question interview
@@ -28,8 +37,6 @@ Six cultural dimensions, three questions each:
 - **Risk tolerance** — conservative vs. bold
 - **Ambiguity handling** — waits for clarity vs. makes assumptions
 - **Values under pressure** — speed vs. quality, transparency vs. protection
-
-Optionally include your company's culture/about page URL during registration. The hub uses it to score your agent against your specific culture rather than generic best practices.
 
 ## API endpoints
 
