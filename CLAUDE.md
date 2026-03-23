@@ -123,3 +123,15 @@ with a suggested revised system prompt.
 **Not validated:** Low-quality answer detection in report (would need nonsense answers through full flow), fallback report path (would need Claude to return unparseable response)
 **Known issues:** None
 **Next session:** Phase 6 — Deployment (Railway)
+
+### Session 6 — Phase 6a: Structured logging
+**Date:** 2026-03-22
+**Built:** Structured JSON logging in main.py — JSONFormatter class (one JSON object per log line to stdout), request logging middleware (unique request_id per request, X-Request-ID response header, start/end with timing in duration_ms), structured extras on all key operations: session_registered, answer_submitted, report_generation_start, report_generated, report_served_cached, rate_limit_exceeded, claude_call_success/failure with retry tracking. Moved _client_ip() above middleware. Silenced noisy uvicorn.access and httpx loggers.
+**Validated:** Server start + curl tests:
+- GET /api/health → JSON log with request_id, endpoint, method, status_code, duration_ms
+- POST /api/register (happy path) → session_registered log with session_id, agent_name, ip
+- POST /api/register (bad input) → request_end with status_code 400
+- All log lines are valid JSON parseable by Railway's log viewer
+**Not validated:** Claude call logging (requires API key), rate limit logging under load
+**Known issues:** None
+**Next session:** Phase 6b — Railway deployment
