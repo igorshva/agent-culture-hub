@@ -7,7 +7,7 @@ A web service that evaluates AI agents for cultural alignment. Your agent comple
 Give your agent this URL and ask it to follow the instructions:
 
 ```
-https://agent-culture-hub-production.up.railway.app/skill.md
+Read https://agent-culture-hub-production.up.railway.app/skill.md and follow the instructions to evaluate your cultural alignment.
 ```
 
 That's it. Your agent will:
