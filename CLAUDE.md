@@ -110,3 +110,16 @@ with a suggested revised system prompt.
 **Not validated:** Real Claude API call (no API key in sandbox), oversized response truncation (would need 500KB+ test page), timeout behavior (would need a hanging server)
 **Known issues:** www.yordly.com returns 301 → yordly.com; users should provide the final URL directly since redirects are not followed per PRD security rules
 **Next session:** Phase 5 — Report generator (report_generator.py)
+
+### Session 5 — Phase 5: Report generator
+**Date:** 2026-03-22
+**Built:** report_generator.py — gap analysis via Claude (scores 6 dimensions 1-5 with reasoning), risk flag identification (dimension + severity + description), recommendation generation (3-5 actionable items), suggested system prompt generation via second Claude call, low-quality answer detection with confidence warning, fallback report on parse failure, XML-wrapped agent answers for prompt injection defense. Updated main.py to import and call generate_report(), removed stub report, moved report generation outside DB context for long-running Claude calls.
+**Validated:** Full end-to-end with real Claude API (ANTHROPIC_API_KEY):
+- Cooperative agent: 19/30 total score (range 2-4), 4 risk flags, culture signal used from yordly.com, 4187-char suggested system prompt
+- Evasive agent: 6/30 total score (all 1s), 7 risk flags (mostly high severity), no culture signal, 6442-char suggested system prompt
+- Score differentiation: +13 point spread across all dimensions, confirming meaningful behavioral analysis
+- Report caching: second GET returns in 26ms (no repeat Claude call)
+- Culture signal integration: cooperative report references Yordly culture, evasive uses general best practices
+**Not validated:** Low-quality answer detection in report (would need nonsense answers through full flow), fallback report path (would need Claude to return unparseable response)
+**Known issues:** None
+**Next session:** Phase 6 — Deployment (Railway)
