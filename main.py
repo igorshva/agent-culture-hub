@@ -4,7 +4,7 @@ FastAPI backend with all endpoints, SQLite session storage, input validation,
 rate limiting, and the single call_claude() helper.
 
 Phase 5: All modules wired — interviewer.py, culture_fetcher.py, report_generator.py.
-Full end-to-end flow operational.
+Phase 6a: Structured JSON logging for Railway observability.
 """
 
 import os
@@ -15,6 +15,7 @@ import uuid
 import sqlite3
 import asyncio
 import logging
+import logging.config
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from contextlib import contextmanager
@@ -53,14 +54,129 @@ RATE_LIMIT_REGISTRATIONS_PER_HOUR = 10
 RATE_LIMIT_ANSWERS_PER_MINUTE = 30
 RATE_LIMIT_CULTURE_FETCHES_PER_HOUR = 20
 
+# ---------------------------------------------------------------------------
+# Structured JSON logging — Railway reads stdout natively
+# ---------------------------------------------------------------------------
+
+
+class JSONFormatter(logging.Formatter):
+    """Emit one JSON object per log line for structured log ingestion."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        log_entry = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+        }
+        # Attach extra fields passed via `logger.info("msg", extra={...})`
+        for key in ("request_id", "session_id", "endpoint", "method",
+                     "status_code", "duration_ms", "ip", "agent_name",
+                     "dimension", "question_number", "error", "url",
+                     "retry_attempt", "claude_call_type"):
+            val = getattr(record, key, None)
+            if val is not None:
+                log_entry[key] = val
+        if record.exc_info and record.exc_info[0] is not None:
+            log_entry["exception"] = self.formatException(record.exc_info)
+        return json.dumps(log_entry, default=str)
+
+
+def _setup_logging():
+    """Configure structured JSON logging to stdout."""
+    handler = logging.StreamHandler()
+    handler.setFormatter(JSONFormatter())
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+    # Quiet noisy libraries
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
+_setup_logging()
 logger = logging.getLogger("hub")
-logging.basicConfig(level=logging.INFO)
 
 # ---------------------------------------------------------------------------
 # FastAPI app
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Helper to get client IP (defined early — used by middleware)
+# ---------------------------------------------------------------------------
+
+
+def _client_ip(request: Request) -> str:
+    """Extract client IP, respecting X-Forwarded-For behind a proxy."""
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
 app = FastAPI(title="Agent Culture Hub", version=HUB_VERSION)
+
+
+# ---------------------------------------------------------------------------
+# Request logging middleware
+# ---------------------------------------------------------------------------
+
+
+@app.middleware("http")
+async def request_logging_middleware(request: Request, call_next):
+    """
+    Attach a unique request_id to every request, log start + finish with
+    timing. The request_id is returned in the response header X-Request-ID
+    for client-side correlation.
+    """
+    request_id = uuid.uuid4().hex[:12]
+    request.state.request_id = request_id
+    ip = _client_ip(request)
+    path = request.url.path
+    method = request.method
+
+    logger.info(
+        "request_start",
+        extra={
+            "request_id": request_id,
+            "endpoint": path,
+            "method": method,
+            "ip": ip,
+        },
+    )
+
+    start = time.monotonic()
+    try:
+        response = await call_next(request)
+    except Exception:
+        duration_ms = round((time.monotonic() - start) * 1000)
+        logger.error(
+            "request_unhandled_error",
+            extra={
+                "request_id": request_id,
+                "endpoint": path,
+                "method": method,
+                "duration_ms": duration_ms,
+            },
+            exc_info=True,
+        )
+        raise
+
+    duration_ms = round((time.monotonic() - start) * 1000)
+    logger.info(
+        "request_end",
+        extra={
+            "request_id": request_id,
+            "endpoint": path,
+            "method": method,
+            "status_code": response.status_code,
+            "duration_ms": duration_ms,
+        },
+    )
+    response.headers["X-Request-ID"] = request_id
+    return response
+
 
 # ---------------------------------------------------------------------------
 # SQLite helpers
@@ -184,6 +300,10 @@ def _check_rate_limit(key: str, max_count: int, window_seconds: int):
 
         if row["count"] >= max_count:
             retry_after = int(window_seconds - elapsed) + 1
+            logger.warning(
+                "rate_limit_exceeded",
+                extra={"ip": key, "status_code": 429},
+            )
             raise HTTPException(
                 status_code=429,
                 detail="Rate limit exceeded",
@@ -321,6 +441,7 @@ async def call_claude(
     client = _get_anthropic_client()
     last_error = None
 
+    call_start = time.monotonic()
     for attempt in range(MAX_RETRIES):
         try:
             response = await asyncio.to_thread(
@@ -330,19 +451,38 @@ async def call_claude(
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_message}],
             )
+            call_ms = round((time.monotonic() - call_start) * 1000)
+            logger.info(
+                "claude_call_success",
+                extra={
+                    "claude_call_type": "culture_extraction" if "cultural signals" in system_prompt else "gap_analysis" if "evaluating AI agent" in system_prompt else "prompt_generation",
+                    "duration_ms": call_ms,
+                    "retry_attempt": attempt,
+                },
+            )
             return response.content[0].text
         except anthropic.RateLimitError as e:
             last_error = e
             wait = (2 ** attempt) + 1
-            logger.warning(f"Anthropic rate limit, retry {attempt + 1}/{MAX_RETRIES} in {wait}s")
+            logger.warning(
+                "claude_rate_limit",
+                extra={"retry_attempt": attempt + 1, "error": str(e)},
+            )
             await asyncio.sleep(wait)
         except anthropic.APIError as e:
             last_error = e
             wait = (2 ** attempt) + 1
-            logger.warning(f"Anthropic API error: {e}, retry {attempt + 1}/{MAX_RETRIES} in {wait}s")
+            logger.warning(
+                "claude_api_error",
+                extra={"retry_attempt": attempt + 1, "error": str(e)},
+            )
             await asyncio.sleep(wait)
 
-    logger.error(f"All {MAX_RETRIES} Anthropic retries failed: {last_error}")
+    call_ms = round((time.monotonic() - call_start) * 1000)
+    logger.error(
+        "claude_call_failed",
+        extra={"duration_ms": call_ms, "error": str(last_error)},
+    )
     raise HTTPException(status_code=502, detail="AI service temporarily unavailable")
 
 
@@ -356,19 +496,6 @@ async def startup():
     _init_db()
     _purge_expired()
     logger.info("Hub started, DB initialized, expired sessions purged")
-
-
-# ---------------------------------------------------------------------------
-# Helper to get client IP
-# ---------------------------------------------------------------------------
-
-
-def _client_ip(request: Request) -> str:
-    """Extract client IP, respecting X-Forwarded-For behind a proxy."""
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -439,6 +566,16 @@ async def register(body: RegisterRequest, request: Request):
             ),
         )
 
+    logger.info(
+        "session_registered",
+        extra={
+            "session_id": session_id,
+            "agent_name": body.agent_name,
+            "ip": ip,
+            "url": body.culture_url or "",
+        },
+    )
+
     base_url = str(request.base_url).rstrip("/")
     return {
         "session_id": session_id,
@@ -507,6 +644,15 @@ async def post_interview(session_id: str, body: AnswerRequest, request: Request)
         next_q = current_q + 1
         new_status = "complete" if is_interview_complete(next_q) else "interviewing"
 
+        logger.info(
+            "answer_submitted",
+            extra={
+                "session_id": session_id,
+                "question_number": probe.number,
+                "dimension": probe.dimension,
+            },
+        )
+
         db.execute(
             """UPDATE sessions
                SET current_q = ?, answers = ?, status = ?, last_activity = ?
@@ -564,9 +710,17 @@ async def get_report(session_id: str):
 
         # Return cached report if it exists
         if session["report_cache"]:
+            logger.info(
+                "report_served_cached",
+                extra={"session_id": session_id},
+            )
             return json.loads(session["report_cache"])
 
     # Generate report outside DB context (may take 10-20s for Claude calls)
+    logger.info(
+        "report_generation_start",
+        extra={"session_id": session_id, "agent_name": session["agent_name"]},
+    )
     answers = json.loads(session["answers"])
     report = await generate_report(
         session_id=session_id,
@@ -583,6 +737,20 @@ async def get_report(session_id: str):
             "UPDATE sessions SET report_cache = ? WHERE session_id = ?",
             (json.dumps(report), session_id),
         )
+
+    total_score = sum(
+        d.get("score", 0)
+        for d in report.get("dimension_scores", {}).values()
+        if isinstance(d, dict)
+    )
+    logger.info(
+        "report_generated",
+        extra={
+            "session_id": session_id,
+            "agent_name": session["agent_name"],
+            "status_code": 200,
+        },
+    )
 
     return report
 
