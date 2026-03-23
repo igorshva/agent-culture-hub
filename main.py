@@ -3,8 +3,8 @@ Agent Culture Hub — main.py
 FastAPI backend with all endpoints, SQLite session storage, input validation,
 rate limiting, and the single call_claude() helper.
 
-Phase 3: Interview endpoints wired to interviewer.py probe library.
-Report generation remains a stub until Phase 5.
+Phase 4: Interview endpoints wired to interviewer.py, culture URL fetch
+wired to culture_fetcher.py. Report generation remains a stub until Phase 5.
 """
 
 import os
@@ -33,6 +33,7 @@ from interviewer import (
     format_probe_response,
     detect_low_quality_answers,
 )
+from culture_fetcher import fetch_culture_signal
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -407,13 +408,16 @@ async def register(body: RegisterRequest, request: Request):
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(hours=SESSION_TTL_HOURS)
 
-    # Culture URL fetch — stub for Phase 2, replaced by culture_fetcher.py in Phase 4
+    # Culture URL fetch via culture_fetcher.py
     culture_signal = None
     culture_signal_loaded = False
     if body.culture_url:
-        # Phase 4 will call culture_fetcher.fetch_culture_signal() here
-        culture_signal = json.dumps({})
-        culture_signal_loaded = True
+        ip = _client_ip(request)
+        _check_rate_limit(f"culture:{ip}", RATE_LIMIT_CULTURE_FETCHES_PER_HOUR, 3600)
+        signal = await fetch_culture_signal(body.culture_url, call_claude)
+        if signal:
+            culture_signal = json.dumps(signal)
+            culture_signal_loaded = True
 
     with _get_db() as db:
         db.execute(

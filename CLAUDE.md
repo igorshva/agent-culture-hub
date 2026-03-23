@@ -96,3 +96,17 @@ with a suggested revised system prompt.
 **Not validated:** Probe randomization (not implemented — fixed order per PRD), adversarial answer content
 **Known issues:** None
 **Next session:** Phase 4 — Culture URL fetcher (culture_fetcher.py)
+
+### Session 4 — Phase 4: Culture URL fetcher
+**Date:** 2026-03-20
+**Built:** culture_fetcher.py — URL fetch with all PRD section 6.3 security rules (HTTPS only, no redirects, 5s timeout, 500KB max, allowed content types, DNS rebinding protection, custom User-Agent), HTML text extraction (strips scripts/styles/comments), Claude signal extraction with JSON parsing (handles code fences), culture extraction prompt for 6 dimensions. Updated main.py to import culture_fetcher and call it during registration with rate limiting (20 culture fetches/IP/hr).
+**Validated:** Comprehensive test suite:
+- DNS resolution: public IPs pass, localhost/internal blocked, non-existent domains return empty
+- HTML extraction: strips scripts, styles, comments; preserves visible text and entity decoding
+- Claude response parsing: valid JSON, code-fenced JSON, bad JSON, missing keys — all handled correctly
+- Full fetch with mock Claude: yordly.com returns 6 dimensions, fake domain returns empty, localhost IP blocked, redirect URL returns empty (no follow)
+- No-URL registration: culture_signal_loaded=false
+- Server integration: URL fetch succeeds (200 from yordly.com), graceful fallback when Claude API unavailable
+**Not validated:** Real Claude API call (no API key in sandbox), oversized response truncation (would need 500KB+ test page), timeout behavior (would need a hanging server)
+**Known issues:** www.yordly.com returns 301 → yordly.com; users should provide the final URL directly since redirects are not followed per PRD security rules
+**Next session:** Phase 5 — Report generator (report_generator.py)
