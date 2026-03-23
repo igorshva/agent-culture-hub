@@ -135,3 +135,18 @@ with a suggested revised system prompt.
 **Not validated:** Claude call logging (requires API key), rate limit logging under load
 **Known issues:** None
 **Next session:** Phase 6b — Railway deployment
+
+### Session 7 — Phase 6b: Railway deployment
+**Date:** 2026-03-22
+**Built:** Deployed to Railway at agent-culture-hub-production.up.railway.app. Fixed call_claude() to catch TypeError/AuthenticationError from missing API key (returns 503 instead of raw 500). Added _base_url() helper to respect X-Forwarded-Proto from Railway's reverse proxy so generated URLs use https:// instead of http://.
+**Validated:** Full end-to-end on live Railway deployment:
+- GET /api/health → 200 {"status":"ok","version":"1.0.0"}
+- GET /skill.md → 200 text/markdown
+- POST /api/register with culture_url=yordly.com → 201, culture_signal_loaded=true (Claude API key working)
+- Full 18-question interview (Q1–Q18) → all accepted, status=complete
+- GET /api/report → 200 in 60s, full report with 6 dimension scores (range 2-4), 4 risk flags, 5 recommendations, suggested system prompt referencing Yordly culture
+- Report caching → second GET in 0.5s (no repeat Claude calls)
+- SQLite persistent volume at /data confirmed working (sessions survive across requests)
+**Not validated:** Rate limit enforcement under sustained load, 410 expired session (requires 24hr wait), X-Forwarded-Proto fix (requires redeploy)
+**Known issues:** interview_url returns http:// instead of https:// (fix written, needs deploy)
+**Next session:** Merge to main, update skill.md {hub_url} placeholder, create mock_agent_test.py

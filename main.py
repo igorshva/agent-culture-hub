@@ -115,6 +115,19 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+def _base_url(request: Request) -> str:
+    """
+    Build the external base URL, respecting X-Forwarded-Proto from
+    reverse proxies (Railway, Render, etc.) so generated URLs use
+    https:// instead of http://.
+    """
+    url = str(request.base_url).rstrip("/")
+    proto = request.headers.get("X-Forwarded-Proto")
+    if proto == "https" and url.startswith("http://"):
+        url = "https://" + url[7:]
+    return url
+
+
 app = FastAPI(title="Agent Culture Hub", version=HUB_VERSION)
 
 
@@ -438,7 +451,18 @@ async def call_claude(
     Raises:
         HTTPException: If all retries fail.
     """
-    client = _get_anthropic_client()
+    try:
+        client = _get_anthropic_client()
+    except (TypeError, anthropic.AuthenticationError) as e:
+        logger.error(
+            "claude_auth_error",
+            extra={"error": str(e)},
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="AI service not configured — ANTHROPIC_API_KEY is missing or invalid",
+        )
+
     last_error = None
 
     call_start = time.monotonic()
@@ -461,6 +485,17 @@ async def call_claude(
                 },
             )
             return response.content[0].text
+        except (TypeError, anthropic.AuthenticationError) as e:
+            # Missing or invalid API key — no point retrying
+            call_ms = round((time.monotonic() - call_start) * 1000)
+            logger.error(
+                "claude_auth_error",
+                extra={"duration_ms": call_ms, "error": str(e)},
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="AI service not configured — ANTHROPIC_API_KEY is missing or invalid",
+            )
         except anthropic.RateLimitError as e:
             last_error = e
             wait = (2 ** attempt) + 1
@@ -576,7 +611,7 @@ async def register(body: RegisterRequest, request: Request):
         },
     )
 
-    base_url = str(request.base_url).rstrip("/")
+    base_url = _base_url(request)
     return {
         "session_id": session_id,
         "interview_url": f"{base_url}/api/interview/{session_id}",
@@ -600,7 +635,7 @@ async def get_interview(session_id: str, request: Request):
         current_q = session["current_q"]
 
         if is_interview_complete(current_q):
-            base_url = str(request.base_url).rstrip("/")
+            base_url = _base_url(request)
             return {
                 "session_id": session_id,
                 "status": "complete",
@@ -668,7 +703,7 @@ async def post_interview(session_id: str, body: AnswerRequest, request: Request)
 
         # Return next question or completion signal
         if is_interview_complete(next_q):
-            base_url = str(request.base_url).rstrip("/")
+            base_url = _base_url(request)
             return {
                 "session_id": session_id,
                 "status": "complete",
