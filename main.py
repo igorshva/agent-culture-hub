@@ -1,10 +1,12 @@
 """
 Agent Culture Hub — main.py
-FastAPI backend with all endpoints, SQLite session storage, input validation,
+FastAPI backend with all endpoints, Postgres session storage, input validation,
 rate limiting, and the single call_claude() helper.
 
 Phase 5: All modules wired — interviewer.py, culture_fetcher.py, report_generator.py.
-Phase 6a: Structured JSON logging for Railway observability.
+Phase 6a: Structured JSON logging.
+Phase 6c: Migrated session storage from SQLite to Postgres (Neon) for Vercel's
+ephemeral function filesystem.
 """
 
 import os
@@ -12,7 +14,6 @@ import re
 import json
 import time
 import uuid
-import sqlite3
 import asyncio
 import logging
 import logging.config
@@ -22,6 +23,8 @@ from contextlib import contextmanager
 from typing import Optional
 
 import anthropic
+import psycopg
+from psycopg.rows import dict_row
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, field_validator
@@ -41,7 +44,7 @@ from report_generator import generate_report
 # Configuration
 # ---------------------------------------------------------------------------
 
-DB_PATH = os.environ.get("DB_PATH", "/data/hub.db")
+DATABASE_URL = os.environ.get("DATABASE_URL")
 SESSION_TTL_HOURS = 24
 INACTIVE_PURGE_HOURS = 2
 TOTAL_QUESTIONS = INTERVIEWER_TOTAL_QUESTIONS  # 18 — from interviewer.py
@@ -55,7 +58,7 @@ RATE_LIMIT_ANSWERS_PER_MINUTE = 30
 RATE_LIMIT_CULTURE_FETCHES_PER_HOUR = 20
 
 # ---------------------------------------------------------------------------
-# Structured JSON logging — Railway reads stdout natively
+# Structured JSON logging — Vercel reads stdout natively
 # ---------------------------------------------------------------------------
 
 
@@ -118,7 +121,7 @@ def _client_ip(request: Request) -> str:
 def _base_url(request: Request) -> str:
     """
     Build the external base URL, respecting X-Forwarded-Proto from
-    reverse proxies (Railway, Render, etc.) so generated URLs use
+    reverse proxies (Vercel, etc.) so generated URLs use
     https:// instead of http://.
     """
     url = str(request.base_url).rstrip("/")
@@ -192,15 +195,14 @@ async def request_logging_middleware(request: Request, call_next):
 
 
 # ---------------------------------------------------------------------------
-# SQLite helpers
+# Postgres helpers
 # ---------------------------------------------------------------------------
 
 
 def _init_db():
     """Create tables if they don't exist. Called on startup."""
-    os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
     with _get_db() as db:
-        db.executescript("""
+        db.execute("""
             CREATE TABLE IF NOT EXISTS sessions (
                 session_id    TEXT PRIMARY KEY,
                 agent_name    TEXT NOT NULL,
@@ -215,22 +217,21 @@ def _init_db():
                 answers       TEXT NOT NULL DEFAULT '[]',
                 report_cache  TEXT,
                 ip_address    TEXT
-            );
-
+            )
+        """)
+        db.execute("""
             CREATE TABLE IF NOT EXISTS rate_limits (
                 key        TEXT PRIMARY KEY,
                 count      INTEGER NOT NULL DEFAULT 0,
                 window_start TEXT NOT NULL
-            );
+            )
         """)
 
 
 @contextmanager
 def _get_db():
-    """Yield a SQLite connection with row_factory set to sqlite3.Row."""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
+    """Yield a Postgres connection with dict-row results."""
+    conn = psycopg.connect(DATABASE_URL, row_factory=dict_row, autocommit=False)
     try:
         yield conn
         conn.commit()
@@ -243,9 +244,9 @@ def _purge_expired():
     now = datetime.now(timezone.utc).isoformat()
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=INACTIVE_PURGE_HOURS)).isoformat()
     with _get_db() as db:
-        db.execute("DELETE FROM sessions WHERE expires_at < ?", (now,))
+        db.execute("DELETE FROM sessions WHERE expires_at < %s", (now,))
         db.execute(
-            "DELETE FROM sessions WHERE last_activity < ? AND status = 'interviewing'",
+            "DELETE FROM sessions WHERE last_activity < %s AND status = 'interviewing'",
             (cutoff,),
         )
 
@@ -254,7 +255,7 @@ def _touch_session(db, session_id: str):
     """Update last_activity timestamp for a session."""
     now = datetime.now(timezone.utc).isoformat()
     db.execute(
-        "UPDATE sessions SET last_activity = ? WHERE session_id = ?",
+        "UPDATE sessions SET last_activity = %s WHERE session_id = %s",
         (now, session_id),
     )
 
@@ -265,14 +266,14 @@ def _get_session(db, session_id: str) -> Optional[dict]:
     Raises HTTPException 410 if expired.
     """
     row = db.execute(
-        "SELECT * FROM sessions WHERE session_id = ?", (session_id,)
+        "SELECT * FROM sessions WHERE session_id = %s", (session_id,)
     ).fetchone()
     if row is None:
         return None
     session = dict(row)
     expires_at = datetime.fromisoformat(session["expires_at"])
     if datetime.now(timezone.utc) > expires_at:
-        db.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+        db.execute("DELETE FROM sessions WHERE session_id = %s", (session_id,))
         raise HTTPException(status_code=410, detail="Session expired")
     return session
 
@@ -284,18 +285,18 @@ def _get_session(db, session_id: str) -> Optional[dict]:
 
 def _check_rate_limit(key: str, max_count: int, window_seconds: int):
     """
-    Simple sliding-window rate limiter stored in SQLite.
+    Simple sliding-window rate limiter stored in Postgres.
     Raises HTTPException 429 if limit exceeded.
     """
     now = datetime.now(timezone.utc)
     with _get_db() as db:
         row = db.execute(
-            "SELECT count, window_start FROM rate_limits WHERE key = ?", (key,)
+            "SELECT count, window_start FROM rate_limits WHERE key = %s", (key,)
         ).fetchone()
 
         if row is None:
             db.execute(
-                "INSERT INTO rate_limits (key, count, window_start) VALUES (?, 1, ?)",
+                "INSERT INTO rate_limits (key, count, window_start) VALUES (%s, 1, %s)",
                 (key, now.isoformat()),
             )
             return
@@ -306,7 +307,7 @@ def _check_rate_limit(key: str, max_count: int, window_seconds: int):
         if elapsed > window_seconds:
             # Reset window
             db.execute(
-                "UPDATE rate_limits SET count = 1, window_start = ? WHERE key = ?",
+                "UPDATE rate_limits SET count = 1, window_start = %s WHERE key = %s",
                 (now.isoformat(), key),
             )
             return
@@ -324,7 +325,7 @@ def _check_rate_limit(key: str, max_count: int, window_seconds: int):
             )
 
         db.execute(
-            "UPDATE rate_limits SET count = count + 1 WHERE key = ?", (key,)
+            "UPDATE rate_limits SET count = count + 1 WHERE key = %s", (key,)
         )
 
 
@@ -587,7 +588,7 @@ async def register(body: RegisterRequest, request: Request):
             """INSERT INTO sessions
                (session_id, agent_name, description, culture_url, culture_signal,
                 created_at, expires_at, last_activity, status, current_q, answers, ip_address)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'interviewing', 0, '[]', ?)""",
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'interviewing', 0, '[]', %s)""",
             (
                 session_id,
                 body.agent_name,
@@ -690,8 +691,8 @@ async def post_interview(session_id: str, body: AnswerRequest, request: Request)
 
         db.execute(
             """UPDATE sessions
-               SET current_q = ?, answers = ?, status = ?, last_activity = ?
-               WHERE session_id = ?""",
+               SET current_q = %s, answers = %s, status = %s, last_activity = %s
+               WHERE session_id = %s""",
             (
                 next_q,
                 json.dumps(answers),
@@ -769,7 +770,7 @@ async def get_report(session_id: str):
     # Cache the report
     with _get_db() as db:
         db.execute(
-            "UPDATE sessions SET report_cache = ? WHERE session_id = ?",
+            "UPDATE sessions SET report_cache = %s WHERE session_id = %s",
             (json.dumps(report), session_id),
         )
 

@@ -19,9 +19,9 @@ with a suggested revised system prompt.
 
 ## Tech stack
 - Python 3.11+ + FastAPI + uvicorn
-- SQLite via stdlib sqlite3 — no ORM
+- Postgres (Neon, via Vercel Marketplace) — psycopg, no ORM
 - Anthropic API: claude-sonnet-4-6
-- Deploy: Railway
+- Deploy: Vercel
 
 ## All Anthropic API calls
 - Must go through a single call_claude() helper in main.py
@@ -46,7 +46,7 @@ with a suggested revised system prompt.
   culture_fetcher.py
   report_generator.py
   requirements.txt
-  railway.toml
+  vercel.json
 ```
 
 ## Cowork session rules
@@ -150,3 +150,17 @@ with a suggested revised system prompt.
 **Not validated:** Rate limit enforcement under sustained load, 410 expired session (requires 24hr wait), X-Forwarded-Proto fix (requires redeploy)
 **Known issues:** interview_url returns http:// instead of https:// (fix written, needs deploy)
 **Next session:** Merge to main, update skill.md {hub_url} placeholder, create mock_agent_test.py
+
+### Session 8 — Phase 6c: Migration from Railway to Vercel
+**Date:** 2026-08-11
+**Built:** Migrated session storage from SQLite (`sqlite3`, `/data` volume) to Postgres (`psycopg`, `DATABASE_URL`) since Vercel Functions have no persistent local disk — rewrote all queries in main.py (`?` → `%s` placeholders, `sqlite3.Row` → `psycopg.rows.dict_row`). Added `vercel.json` (Python runtime, `maxDuration: 120` for `main.py`). Removed `railway.toml`. Updated README.md and CLAUDE.md (tech stack, file structure, self-hosting/deploy instructions) to reference Vercel/Postgres instead of Railway/SQLite.
+**Validated:** Full end-to-end on live Vercel deployment (https://agent-culture-hub.vercel.app), Neon Postgres provisioned via Vercel Marketplace integration:
+- GET /api/health → 200 {"status":"ok","version":"1.0.0"}
+- GET /skill.md → 200 text/markdown
+- POST /api/register → 201, session created in Postgres
+- GET /api/interview/{id} → 200, Q1 returned
+- POST /api/interview/{id} → 200, answer accepted, Q2 returned
+- GET /api/report/{id} → 202 in_progress (before interview completion)
+**Not validated:** Full 18-question interview + report generation on Vercel (only smoke-tested first 2 questions), rate limiting on Postgres-backed rate_limits table, ANTHROPIC_API_KEY set by user directly via `vercel env add` (not visible to this session), GitHub auto-deploy integration (repo connection failed during `vercel link`, deploys are currently CLI-only)
+**Known issues:** `agent-culture-hub-production.up.railway.app` Railway URL is now dead — repo `README.md`/`skill.md` hub URL references updated to `agent-culture-hub.vercel.app`, but if the {hub_url} placeholder is used elsewhere it should be checked
+**Next session:** Reconnect Git integration for auto-deploy on push (optional), run full 18-question interview + report through Vercel to validate report_generator.py under the 120s maxDuration budget

@@ -9,14 +9,14 @@ Tell your agent what to do by copy-pasting one of these:
 **With a culture URL** (recommended — scores against your company's specific culture):
 
 ```
-Read https://agent-culture-hub-production.up.railway.app/skill.md and follow the instructions.
+Read https://agent-culture-hub.vercel.app/skill.md and follow the instructions.
 Use https://example.com/about as the culture_url when you register.
 ```
 
 **Without a culture URL** (scores against general best practices):
 
 ```
-Read https://agent-culture-hub-production.up.railway.app/skill.md and follow the instructions.
+Read https://agent-culture-hub.vercel.app/skill.md and follow the instructions.
 ```
 
 Your agent will:
@@ -64,16 +64,23 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ANTHROPIC_API_KEY` | — | Required. Anthropic API key |
-| `DB_PATH` | `/data/hub.db` | SQLite database path |
-| `PORT` | `8000` | Server port |
+| `DATABASE_URL` | — | Required. Postgres connection string |
+| `PORT` | `8000` | Server port (local dev only) |
 
-### Deploy to Railway
+### Deploy to Vercel
 
-The repo includes `railway.toml` with build config, health check, and a persistent volume for SQLite at `/data`. Set `ANTHROPIC_API_KEY` in Railway's variable settings.
+The repo includes `vercel.json` (Python runtime config for `main.py`). Sessions are stored in Postgres via the [Neon](https://neon.tech) Vercel Marketplace integration, since Vercel Functions have no persistent local disk.
+
+```bash
+vercel link
+vercel integration add neon
+vercel env add ANTHROPIC_API_KEY production preview
+vercel deploy --prod
+```
 
 ## Tech stack
 
-Python 3.11+, FastAPI, SQLite (WAL mode), Anthropic API (claude-sonnet-4-6)
+Python 3.11+, FastAPI, Postgres (Neon via Vercel Marketplace), Anthropic API (claude-sonnet-4-6)
 
 ## License
 
