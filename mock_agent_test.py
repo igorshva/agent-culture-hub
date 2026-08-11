@@ -56,7 +56,7 @@ def _request(method: str, path: str, body: Optional[dict] = None) -> Tuple[int, 
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Content-Type", "application/json")
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=110) as resp:
             return resp.status, json.loads(resp.read())
     except urllib.error.HTTPError as e:
         return e.code, json.loads(e.read())
